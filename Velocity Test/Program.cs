@@ -11,182 +11,200 @@ using Thorlabs.MotionControl.GenericMotorCLI.Settings;
 using Thorlabs.MotionControl.KCube.DCServoCLI;
 using Thorlabs.MotionControl.DeviceManagerCLI;
 using Thorlabs.MotionControl.GenericMotorCLI.AdvancedMotor;
-
+using System.IO;
+using System.Timers;
 
 namespace velocityTest
 {
+
     class Program
     {
-        // declare the serial port
-        static SerialPort port;
+        // Simulation? //
+        static bool SimulationTrue = true;
+
+        static double velocity = 0;
+
+        static StreamWriter writer;
+        static KCubeDCServo device1, device2, device3;
+
         static void Main(string[] args)
         {
 
-
-            // Find the Devices and Begin Communicating with them via USB
-            // Enter the serial number for your device
             string serialNo1 = "27505282"; // x
             string serialNo2 = "27505360"; // y
             string serialNo3 = "27505370"; // z
 
+            //Simulation
+            if (SimulationTrue == true)
+            {
+                SimulationManager.Instance.InitializeSimulations();
+                serialNo1 = "27000001"; // x
+                serialNo2 = "27000002"; // y
+                serialNo3 = "27000003"; // z
+            }
+
             DeviceManagerCLI.BuildDeviceList();
 
-            // Creates an instance of KCubeDCServo class, passing in the Serial number parameter.  
-            KCubeDCServo device1 = KCubeDCServo.CreateKCubeDCServo(serialNo1);
-            KCubeDCServo device2 = KCubeDCServo.CreateKCubeDCServo(serialNo2);
-            KCubeDCServo device3 = KCubeDCServo.CreateKCubeDCServo(serialNo3);
+            device1 = KCubeDCServo.CreateKCubeDCServo(serialNo1);
+            device2 = KCubeDCServo.CreateKCubeDCServo(serialNo2);
+            device3 = KCubeDCServo.CreateKCubeDCServo(serialNo3);
 
-            // We tell the user that we are opening connection to the device. 
-            Console.WriteLine("Opening device {0}", serialNo1);
-            Console.WriteLine("Opening device {0}", serialNo2);
-            Console.WriteLine("Opening device {0}", serialNo3);
-
-            // Connects to the device. 
+            Console.WriteLine("Opening devices...");
             device1.Connect(serialNo1);
-
-            // Wait for the device settings to initialize. We ask the device to 
-            // throw an exception if this takes more than 5000ms (5s) to complete. 
-            device1.WaitForSettingsInitialized(5000);
-
-            // Same for Device 2 and 3
             device2.Connect(serialNo2);
-            device2.WaitForSettingsInitialized(5000);
             device3.Connect(serialNo3);
+
+            device1.WaitForSettingsInitialized(5000);
+            device2.WaitForSettingsInitialized(5000);
             device3.WaitForSettingsInitialized(5000);
 
-            // This calls LoadMotorConfiguration on the device to initialize the 
-            // DeviceUnitConverter object required for real world unit parameters.
-            MotorConfiguration motorSettings1 = device1.LoadMotorConfiguration(device1.DeviceID,
-            DeviceConfiguration.DeviceSettingsUseOptionType.UseFileSettings);
+            device1.LoadMotorConfiguration(device1.DeviceID, DeviceConfiguration.DeviceSettingsUseOptionType.UseFileSettings);
+            device2.LoadMotorConfiguration(device2.DeviceID, DeviceConfiguration.DeviceSettingsUseOptionType.UseFileSettings);
+            device3.LoadMotorConfiguration(device3.DeviceID, DeviceConfiguration.DeviceSettingsUseOptionType.UseFileSettings);
 
-            MotorConfiguration motorSettings2 = device2.LoadMotorConfiguration(device2.DeviceID,
-            DeviceConfiguration.DeviceSettingsUseOptionType.UseFileSettings);
-
-            MotorConfiguration motorSettings3 = device3.LoadMotorConfiguration(device3.DeviceID,
-            DeviceConfiguration.DeviceSettingsUseOptionType.UseFileSettings);
-
-            // This starts polling the device at intervals of 250ms (0.25s).
             device1.StartPolling(250);
             device2.StartPolling(250);
             device3.StartPolling(250);
 
-            // We are now able to Enable the device otherwise any move is ignored. 
-            // You should see a physical response from your controller. 
             device1.EnableDevice();
             device2.EnableDevice();
             device3.EnableDevice();
             Console.WriteLine("Devices Enabled");
 
-            // Needs a delay to give time for the device to be enabled. 
             Thread.Sleep(500);
-            Console.WriteLine("Are you ready?");
-            string answer1 = Console.ReadLine();
-            Console.WriteLine("Now Homing");
 
-            // Home all actuators at once  
+            Console.WriteLine("Now Homing...");
             Thread Home1Thread = new Thread(() => Home1(device1));
             Thread Home2Thread = new Thread(() => Home2(device2));
             Thread Home3Thread = new Thread(() => Home3(device3));
-            Home1Thread.Start();
-            Home2Thread.Start();
-            Home3Thread.Start();
 
-            // Wait for the homing to complete
-            Home1Thread.Join();
-            Home2Thread.Join();
-            Home3Thread.Join();
+            if (SimulationTrue == false)
+            {
+                Home1Thread.Start();
+                Home2Thread.Start();
+                Home3Thread.Start();
+                Home1Thread.Join();
+                Home2Thread.Join();
+                Home3Thread.Join();
+            }
             
 
-            int velocity = 0;
+            Console.WriteLine("Devices Homed.");
+
+            // Prepare the CSV writer
+            writer = new StreamWriter("VelocityData.csv");
+            writer.WriteLine("Time (s),X Position,Y Position,Z Position");
+
             string response = "none";
 
-            while (true){
-
-                Console.WriteLine("Choose a velocity or write break");
+            while (true) 
+            {
+                Console.WriteLine("Choose a velocity or write 'break' to end:");
                 response = Console.ReadLine();
 
                 if (response == "break")
                 {
-                    Console.WriteLine("ending");
+                    Console.WriteLine("Ending test...");
                     break;
                 }
+                
+                writer.WriteLine($"Velocity: {velocity}");
 
-                velocity= Convert.ToInt32(response);
+                velocity = Convert.ToDouble(response);
+                Console.WriteLine("Moving to start position...");
 
-                Console.WriteLine("moving to start");
-
-                Thread MoveHome = new Thread(() => MoveZ(device2, 5, 10));
+                Thread MoveHome = new Thread(() => MoveAct(device2, 5, 10));
                 MoveHome.Start();
                 MoveHome.Join();
 
-                Console.WriteLine("Starting");
-
+                Console.WriteLine("Starting movement...");
                 Stopwatch sw = Stopwatch.StartNew();
 
-                sw.Start();
+                // Start capturing positions while the device is moving
+                Thread capturePositionsThread = new Thread(CapturePositionsDuringMovement);
+                capturePositionsThread.Start();
 
-                Thread MoveEnd = new Thread(() => MoveZ(device2, 25, velocity));
+                Thread MoveEnd = new Thread(() => MoveAct(device2, 25, velocity));
                 MoveEnd.Start();
                 MoveEnd.Join();
 
+                // Stop capturing positions after the movement ends
+                capturePositionsThread.Join();
+
                 sw.Stop();
-
-                Console.WriteLine("Time was " + sw.ElapsedMilliseconds);
-                Console.WriteLine("Velocity was " + response);
-
-
+                Console.WriteLine($"Time taken: {sw.ElapsedMilliseconds} ms");
+                Console.WriteLine($"Velocity: {velocity}");
             }
 
-            // Raise head to allow you to remove slide
+            // Close the CSV writer
+            writer.Close();
 
-            //Closing the Devices
-            //Stop polling devices
+            // Stop polling and disconnect devices
             device1.StopPolling();
             device2.StopPolling();
             device3.StopPolling();
-
-            // Shut down controller using Disconnect() to close comms
             device1.ShutDown();
             device2.ShutDown();
             device3.ShutDown();
 
-            Console.WriteLine("The Test is over. Press any key to exit");
+            Console.WriteLine("Test is over. Press any key to exit.");
             Console.ReadKey();
-        }
-        static void MoveX(KCubeDCServo device1, decimal Xposition, int Velocities)
-        {
-            device1.SetVelocityParams(acceleration: 100, maxVelocity: Velocities);
-            device1.MoveTo(Xposition, 200000);
-            Console.WriteLine("Current X position: {0}", device1.Position);
-        }
-        static void MoveY(KCubeDCServo device2, decimal Yposition, int Velocities)
-        {
-            device2.SetVelocityParams(acceleration: 100, maxVelocity: Velocities);
-            device2.MoveTo(Yposition, 200000);
-            Console.WriteLine("Current Y position: {0}", device2.Position);
-        }
-        static void MoveZ(KCubeDCServo device3, decimal Zposition, int Velocities)
-        {
-            device3.SetVelocityParams(acceleration: 100, maxVelocity: Velocities);
-            device3.MoveTo(Zposition, 200000);
-            Console.WriteLine("Current Z position: {0}", device3.Position);
+
+            if (SimulationTrue == true)
+            {
+                SimulationManager.Instance.UninitializeSimulations();
+            }
+
         }
 
-        static void Home1(KCubeDCServo device1)
-        {
-            device1.Home(60000);
-        }
-        static void Home2(KCubeDCServo device2)
-        {
-            device2.Home(60000);
-        }
-        static void Home3(KCubeDCServo device3)
-        {
-            device3.Home(60000);
+        static void CapturePositionsDuringMovement()
+        { 
+            Stopwatch movementStopwatch = Stopwatch.StartNew();
+
+            double timeToMove = 20 / velocity * 1000;
+
+            while (movementStopwatch.ElapsedMilliseconds<timeToMove)
+            {
+                while((movementStopwatch.ElapsedMilliseconds < 2000) || ((movementStopwatch.ElapsedMilliseconds > (timeToMove - 2000))&& movementStopwatch.ElapsedMilliseconds < timeToMove))
+                {
+                    // Capture the current positions
+                    decimal xPos = device1.Position;
+                    decimal yPos = device2.Position;
+                    decimal zPos = device3.Position;
+
+                    // Get the elapsed time in seconds
+                    double time = movementStopwatch.ElapsedMilliseconds / 1000.0;
+
+                    // Write the data to the CSV file
+                    writer.WriteLine($"{time},{xPos},{yPos},{zPos}");
+                    Console.WriteLine($"Time: {time}s, X: {xPos}, Y: {yPos}, Z: {zPos}");
+
+                    // Wait 0.1 seconds before capturing the next position
+                    Thread.Sleep(1);
+                }
+            }
         }
 
-        
+        static void MoveAct(KCubeDCServo device, decimal Zposition, double Velocities)
+        {
+            device.SetVelocityParams(acceleration: 100, maxVelocity: Convert.ToDecimal(Velocities));
+            device.MoveTo(Zposition, 200000);
+            Console.WriteLine($"Current position: {device.Position}");
+        }
 
+        static void Home1(KCubeDCServo device)
+        {
+            device.Home(60000);
+        }
 
+        static void Home2(KCubeDCServo device)
+        {
+            device.Home(60000);
+        }
+
+        static void Home3(KCubeDCServo device)
+        {
+            device.Home(60000);
+        }
     }
 }
